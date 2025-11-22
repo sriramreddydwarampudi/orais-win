@@ -3,28 +3,31 @@ import os
 import warnings
 import cv2
 import numpy as np
-import tensorflow as tf
 from datetime import datetime
 from pathlib import Path
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtGui import QImage
 
-# 🚫 Suppress TensorFlow tflite warning
-warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
+# 🚫 Suppress warnings
+warnings.filterwarnings("ignore")
+
+# 🔧 Import TFLite Runtime (much smaller than full TensorFlow)
+try:
+    import tflite_runtime.interpreter as tflite
+except ImportError:
+    import tensorflow.lite as tflite
 
 # 🔧 Get application path (works for both script and EXE)
 if getattr(sys, 'frozen', False):
-    # Running as compiled exe
     application_path = os.path.dirname(sys.executable)
 else:
-    # Running as script
     application_path = os.path.dirname(os.path.abspath(__file__))
 
-# 🔧 Load TFLite model from application directory
+# 🔧 Load TFLite model
 model_path = os.path.join(application_path, "tooth_float32.tflite")
 
 try:
-    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter = tflite.Interpreter(model_path=model_path)
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
@@ -57,7 +60,7 @@ class RecordVideo(QtCore.QObject):
     def __init__(self, camera_port=0, parent=None):
         super().__init__(parent)
         self.camera_port = camera_port
-        self.camera = cv2.VideoCapture(self.camera_port, cv2.CAP_DSHOW)  # Windows optimized
+        self.camera = cv2.VideoCapture(self.camera_port, cv2.CAP_DSHOW)
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.zoom_factor = 1.0
@@ -65,7 +68,6 @@ class RecordVideo(QtCore.QObject):
         self.timer.timeout.connect(self.timerEvent)
         self.timer.start(30)
         
-        # 🎥 Video recording variables
         self.is_recording = False
         self.video_writer = None
         self.current_frame = None
@@ -73,19 +75,16 @@ class RecordVideo(QtCore.QObject):
     def timerEvent(self):
         ret, frame = self.camera.read()
         if ret:
-            # Apply digital zoom
             if self.zoom_factor > 1.0:
                 frame = self.apply_zoom(frame, self.zoom_factor)
             
             self.current_frame = frame.copy()
             self.image_data.emit(frame)
             
-            # 🎥 Write frame if recording
             if self.is_recording and self.video_writer is not None:
                 self.video_writer.write(frame)
 
     def apply_zoom(self, frame, zoom_factor):
-        """Apply digital zoom by cropping and resizing"""
         h, w = frame.shape[:2]
         new_h, new_w = int(h / zoom_factor), int(w / zoom_factor)
         start_h = (h - new_h) // 2
@@ -95,11 +94,9 @@ class RecordVideo(QtCore.QObject):
         return zoomed
 
     def set_zoom(self, zoom_factor):
-        """Set zoom factor (1.0 = no zoom, 5.0 = 5x zoom)"""
         self.zoom_factor = max(1.0, min(zoom_factor, 5.0))
 
     def take_photo(self):
-        """📸 Capture and save current frame"""
         if self.current_frame is not None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = PHOTO_DIR / f"dental_photo_{timestamp}.jpg"
@@ -108,15 +105,11 @@ class RecordVideo(QtCore.QObject):
         return None
 
     def start_recording(self):
-        """🎥 Start video recording"""
         if not self.is_recording:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = VIDEO_DIR / f"dental_video_{timestamp}.mp4"
             
-            # Get frame dimensions
             h, w = self.current_frame.shape[:2] if self.current_frame is not None else (720, 1280)
-            
-            # Initialize video writer (H264 codec for Windows)
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             self.video_writer = cv2.VideoWriter(str(filename), fourcc, 30.0, (w, h))
             
@@ -126,7 +119,6 @@ class RecordVideo(QtCore.QObject):
         return None
 
     def stop_recording(self):
-        """⏹️ Stop video recording"""
         if self.is_recording:
             self.is_recording = False
             if self.video_writer is not None:
@@ -135,7 +127,6 @@ class RecordVideo(QtCore.QObject):
             self.recording_status.emit(False)
 
     def __del__(self):
-        """Clean up camera on exit"""
         if self.camera.isOpened():
             self.camera.release()
 
@@ -192,7 +183,7 @@ class MainWidget(QtWidgets.QWidget):
         self.video.image_data.connect(self.detector_widget.image_data_slot)
         self.video.recording_status.connect(self.update_recording_ui)
 
-        # ✅ Zoom controls
+        # Zoom controls
         zoom_label = QtWidgets.QLabel("Zoom:")
         self.zoom_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.zoom_slider.setMinimum(10)
@@ -208,7 +199,7 @@ class MainWidget(QtWidgets.QWidget):
         reset_button = QtWidgets.QPushButton("Reset Zoom")
         reset_button.clicked.connect(self.reset_zoom)
 
-        # 📸 Capture controls
+        # Capture controls
         self.photo_button = QtWidgets.QPushButton("📸 Take Photo")
         self.photo_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-size: 14px; padding: 10px; }")
         self.photo_button.clicked.connect(self.take_photo)
@@ -217,21 +208,19 @@ class MainWidget(QtWidgets.QWidget):
         self.record_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-size: 14px; padding: 10px; }")
         self.record_button.clicked.connect(self.toggle_recording)
 
-        # 📁 Open folder button
-        self.open_folder_button = QtWidgets.QPushButton("📁 Open Save Folder")
+        self.open_folder_button = QtWidgets.QPushButton("📁 Open Folder")
         self.open_folder_button.clicked.connect(self.open_save_folder)
 
-        # Status label
+        # Status
         self.status_label = QtWidgets.QLabel(f"Ready | Saving to: {SAVE_DIR}")
         self.status_label.setAlignment(QtCore.Qt.AlignCenter)
         self.status_label.setStyleSheet("font-size: 11px; padding: 5px;")
 
-        # Recording indicator
         self.recording_indicator = QtWidgets.QLabel("")
         self.recording_indicator.setAlignment(QtCore.Qt.AlignCenter)
         self.recording_indicator.setStyleSheet("font-size: 14px; color: red; font-weight: bold;")
 
-        # ✅ Layout
+        # Layout
         zoom_layout = QtWidgets.QHBoxLayout()
         zoom_layout.addWidget(zoom_label)
         zoom_layout.addWidget(self.zoom_slider)
@@ -252,17 +241,14 @@ class MainWidget(QtWidgets.QWidget):
         self.setLayout(main_layout)
 
     def update_zoom(self, value):
-        """Update zoom when slider changes"""
         zoom_factor = value / 10.0
         self.video.set_zoom(zoom_factor)
         self.zoom_value_label.setText(f"{zoom_factor:.1f}x")
 
     def reset_zoom(self):
-        """Reset zoom to 1.0x"""
         self.zoom_slider.setValue(10)
 
     def take_photo(self):
-        """📸 Take a photo"""
         filename = self.video.take_photo()
         if filename:
             self.status_label.setText(f"✅ Photo saved: {Path(filename).name}")
@@ -271,7 +257,6 @@ class MainWidget(QtWidgets.QWidget):
             self.status_label.setText("❌ Failed to capture photo")
 
     def toggle_recording(self):
-        """🎥 Start/Stop video recording"""
         if not self.video.is_recording:
             filename = self.video.start_recording()
             if filename:
@@ -282,16 +267,14 @@ class MainWidget(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(3000, lambda: self.status_label.setText(f"Ready | Saving to: {SAVE_DIR}"))
 
     def open_save_folder(self):
-        """📁 Open the save folder in file explorer"""
         if sys.platform == 'win32':
             os.startfile(SAVE_DIR)
-        elif sys.platform == 'darwin':  # macOS
+        elif sys.platform == 'darwin':
             os.system(f'open "{SAVE_DIR}"')
-        else:  # Linux
+        else:
             os.system(f'xdg-open "{SAVE_DIR}"')
 
     def update_recording_ui(self, is_recording):
-        """Update UI based on recording status"""
         if is_recording:
             self.record_button.setText("⏹️ Stop Recording")
             self.record_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-size: 14px; padding: 10px; }")
@@ -304,7 +287,6 @@ class MainWidget(QtWidgets.QWidget):
             self.photo_button.setEnabled(True)
 
 def find_camera():
-    """Find available camera (USB camera preferred)"""
     for i in range(5):
         cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
         if cap.isOpened():
@@ -317,15 +299,11 @@ def find_camera():
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
-
-    # Auto-detect camera
     camera_index = find_camera()
-
     main_window = QtWidgets.QMainWindow()
     main_widget = MainWidget(camera_port=camera_index)
     main_window.setCentralWidget(main_widget)
     main_window.setWindowTitle("🦷 Dental Detection - USB Camera")
     main_window.resize(900, 750)
     main_window.show()
-
     sys.exit(app.exec())

@@ -1,0 +1,54 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install opencv-python-headless
+        pip install tensorflow
+        pip install PySide6
+        pip install numpy
+        pip install pyinstaller
+    
+    - name: Build EXE with PyInstaller
+      run: |
+        pyinstaller --onefile --windowed --add-data "tooth_float32.tflite;." --name "DentalDetection" --icon=icon.ico main.py
+      shell: cmd
+    
+    - name: List dist folder
+      run: dir dist
+      shell: cmd
+    
+    - name: Upload EXE as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DentalDetection-Windows-EXE
+        path: dist/DentalDetection.exe
+        retention-days: 30
+    
+    - name: Create Release (optional)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/DentalDetection.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

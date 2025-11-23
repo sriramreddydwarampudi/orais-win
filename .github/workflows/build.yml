@@ -1,14 +1,16 @@
-name: Build Windows EXE
+name: Build Dental Camera EXE
 
 on:
   push:
     branches: [ main, master ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     
     steps:
@@ -18,58 +20,54 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.11'
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install opencv-python-headless==4.8.1.78
-        pip install tensorflow-cpu==2.15.0
-        pip install PySide6==6.6.0
-        pip install numpy==1.24.3
-        pip install pyinstaller==6.3.0
-      shell: cmd
+        pip install opencv-python pillow pyinstaller
     
-    - name: Verify TensorFlow installation
+    - name: Build EXE with PyInstaller
       run: |
-        python -c "import tensorflow as tf; print('TensorFlow version:', tf.__version__)"
-        python -c "import cv2; print('OpenCV version:', cv2.__version__)"
-        python -c "import PySide6; print('PySide6 installed')"
-      shell: cmd
+        pyinstaller --name="DentalCamera" --onefile --windowed --icon=icon.ico main.py
+      continue-on-error: true
     
-    - name: Build EXE with PyInstaller using spec file
+    - name: Build EXE without icon (fallback)
+      if: failure()
       run: |
-        pyinstaller DentalDetection.spec
-      shell: cmd
+        pyinstaller --name="DentalCamera" --onefile --windowed main.py
     
-    - name: Verify build output
+    - name: Create release directory
       run: |
-        dir dist\DentalDetection
-        if exist dist\DentalDetection\DentalDetection.exe (
-          echo Build successful!
-        ) else (
-          echo Build failed - EXE not found
-          exit 1
-        )
-      shell: cmd
+        mkdir release
+        copy dist\DentalCamera.exe release\
+        echo "Dental Camera Software v1.0" > release\README.txt
+        echo "" >> release\README.txt
+        echo "Installation Instructions:" >> release\README.txt
+        echo "1. Extract all files" >> release\README.txt
+        echo "2. Connect your USB dental camera" >> release\README.txt
+        echo "3. Run DentalCamera.exe" >> release\README.txt
+        echo "4. Click 'Open Fullscreen Display' to show on patient TV" >> release\README.txt
+        echo "" >> release\README.txt
+        echo "Controls:" >> release\README.txt
+        echo "- Freeze Frame: Capture still image" >> release\README.txt
+        echo "- Brightness/Contrast: Adjust image quality" >> release\README.txt
+        echo "- Digital Zoom: Zoom in on details" >> release\README.txt
+        echo "- Flip controls: Mirror image as needed" >> release\README.txt
+        echo "- Press ESC in fullscreen mode to exit" >> release\README.txt
     
-    - name: Zip application folder
-      run: |
-        cd dist
-        tar -a -c -f DentalDetection-Windows.zip DentalDetection
-      shell: cmd
-    
-    - name: Upload Application as artifact
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: DentalDetection-Windows-App
-        path: dist/DentalDetection-Windows.zip
-        retention-days: 30
+        name: DentalCamera-Windows
+        path: release/
     
-    - name: Create Release (optional)
+    - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/DentalDetection-Windows.zip
+        files: release/*
+        draft: false
+        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

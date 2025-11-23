@@ -1,309 +1,305 @@
-import sys
-import os
-import warnings
+"""
+Dental Camera Display Software
+USB Camera feed with controls for patient hall TV display
+"""
+
 import cv2
 import numpy as np
-from datetime import datetime
-from pathlib import Path
-from PySide6 import QtCore, QtWidgets, QtGui
-from PySide6.QtGui import QImage
+from tkinter import Tk, Label, Button, Scale, Frame, HORIZONTAL, messagebox
+from PIL import Image, ImageTk
+import sys
 
-# 🚫 Suppress warnings
-warnings.filterwarnings("ignore")
-
-# 🔧 Import TFLite Runtime (much smaller than full TensorFlow)
-try:
-    import tflite_runtime.interpreter as tflite
-except ImportError:
-    import tensorflow.lite as tflite
-
-# 🔧 Get application path (works for both script and EXE)
-if getattr(sys, 'frozen', False):
-    application_path = os.path.dirname(sys.executable)
-else:
-    application_path = os.path.dirname(os.path.abspath(__file__))
-
-# 🔧 Load TFLite model
-model_path = os.path.join(application_path, "tooth_float32.tflite")
-
-try:
-    interpreter = tflite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-except Exception as e:
-    print(f"Error loading model: {e}")
-    print(f"Looking for model at: {model_path}")
-    sys.exit(1)
-
-CLASS_NAMES = [
-    "Normal",
-    "Initial Caries",
-    "Moderate Caries",
-    "Severe Caries",
-    "Tooth Stain",
-    "Dental Calculus",
-    "Other Lesions"
-]
-
-# 📁 Create save directories (Windows compatible)
-SAVE_DIR = Path.home() / "Documents" / "DentalDetection"
-PHOTO_DIR = SAVE_DIR / "Photos"
-VIDEO_DIR = SAVE_DIR / "Videos"
-PHOTO_DIR.mkdir(parents=True, exist_ok=True)
-VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-
-class RecordVideo(QtCore.QObject):
-    image_data = QtCore.Signal(np.ndarray)
-    recording_status = QtCore.Signal(bool)
-
-    def __init__(self, camera_port=0, parent=None):
-        super().__init__(parent)
-        self.camera_port = camera_port
-        self.camera = cv2.VideoCapture(self.camera_port, cv2.CAP_DSHOW)
-        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.zoom_factor = 1.0
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self.timerEvent)
-        self.timer.start(30)
+class DentalCameraApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Dental Camera - Control Panel")
+        self.root.geometry("1200x800")
         
-        self.is_recording = False
-        self.video_writer = None
-        self.current_frame = None
-
-    def timerEvent(self):
-        ret, frame = self.camera.read()
-        if ret:
-            if self.zoom_factor > 1.0:
-                frame = self.apply_zoom(frame, self.zoom_factor)
-            
-            self.current_frame = frame.copy()
-            self.image_data.emit(frame)
-            
-            if self.is_recording and self.video_writer is not None:
-                self.video_writer.write(frame)
-
-    def apply_zoom(self, frame, zoom_factor):
-        h, w = frame.shape[:2]
-        new_h, new_w = int(h / zoom_factor), int(w / zoom_factor)
-        start_h = (h - new_h) // 2
-        start_w = (w - new_w) // 2
-        cropped = frame[start_h:start_h + new_h, start_w:start_w + new_w]
-        zoomed = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
-        return zoomed
-
-    def set_zoom(self, zoom_factor):
-        self.zoom_factor = max(1.0, min(zoom_factor, 5.0))
-
-    def take_photo(self):
-        if self.current_frame is not None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = PHOTO_DIR / f"dental_photo_{timestamp}.jpg"
-            cv2.imwrite(str(filename), self.current_frame)
-            return str(filename)
-        return None
-
-    def start_recording(self):
-        if not self.is_recording:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = VIDEO_DIR / f"dental_video_{timestamp}.mp4"
-            
-            h, w = self.current_frame.shape[:2] if self.current_frame is not None else (720, 1280)
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            self.video_writer = cv2.VideoWriter(str(filename), fourcc, 30.0, (w, h))
-            
-            self.is_recording = True
-            self.recording_status.emit(True)
-            return str(filename)
-        return None
-
-    def stop_recording(self):
-        if self.is_recording:
-            self.is_recording = False
-            if self.video_writer is not None:
-                self.video_writer.release()
-                self.video_writer = None
-            self.recording_status.emit(False)
-
-    def __del__(self):
-        if self.camera.isOpened():
-            self.camera.release()
-
-class TFLiteDetectionWidget(QtWidgets.QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.image = QImage()
-        self.detected_frame = None
-
-    def detect_tflite(self, frame):
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(img_rgb, (640, 640)).astype(np.float32)
-        input_tensor = np.expand_dims(resized, axis=0) / 255.0
-        interpreter.set_tensor(input_details[0]['index'], input_tensor)
-        interpreter.invoke()
-        output = interpreter.get_tensor(output_details[0]['index'])[0]
-
-        h, w, _ = frame.shape
-        for det in output:
-            x1, y1, x2, y2, score, class_id = det
-            if score < 0.25:
-                continue
-            x1, y1, x2, y2 = int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)
-            label = f"{CLASS_NAMES[int(class_id)]}: {score:.2f}"
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5, (255, 0, 0), 2)
-        return frame
-
-    def image_data_slot(self, image_data):
-        detected = self.detect_tflite(image_data)
-        self.detected_frame = detected
-        self.image = self.get_qimage(detected)
-        self.update()
-
-    def get_qimage(self, image):
-        height, width, _ = image.shape
-        return QImage(image.data, width, height, 3 * width, QImage.Format_BGR888)
-
-    def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        if not self.image.isNull():
-            scaled = self.image.scaled(self.size(), QtCore.Qt.KeepAspectRatio,
-                                       QtCore.Qt.SmoothTransformation)
-            x = (self.width() - scaled.width()) // 2
-            y = (self.height() - scaled.height()) // 2
-            painter.drawImage(x, y, scaled)
-
-class MainWidget(QtWidgets.QWidget):
-    def __init__(self, camera_port=0, parent=None):
-        super().__init__(parent)
-        self.detector_widget = TFLiteDetectionWidget()
-        self.video = RecordVideo(camera_port)
-        self.video.image_data.connect(self.detector_widget.image_data_slot)
-        self.video.recording_status.connect(self.update_recording_ui)
-
-        # Zoom controls
-        zoom_label = QtWidgets.QLabel("Zoom:")
-        self.zoom_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.zoom_slider.setMinimum(10)
-        self.zoom_slider.setMaximum(50)
-        self.zoom_slider.setValue(10)
-        self.zoom_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.zoom_slider.setTickInterval(5)
-        self.zoom_slider.valueChanged.connect(self.update_zoom)
-
-        self.zoom_value_label = QtWidgets.QLabel("1.0x")
-        self.zoom_value_label.setFixedWidth(50)
-
-        reset_button = QtWidgets.QPushButton("Reset Zoom")
-        reset_button.clicked.connect(self.reset_zoom)
-
-        # Capture controls
-        self.photo_button = QtWidgets.QPushButton("📸 Take Photo")
-        self.photo_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-size: 14px; padding: 10px; }")
-        self.photo_button.clicked.connect(self.take_photo)
-
-        self.record_button = QtWidgets.QPushButton("🎥 Start Recording")
-        self.record_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-size: 14px; padding: 10px; }")
-        self.record_button.clicked.connect(self.toggle_recording)
-
-        self.open_folder_button = QtWidgets.QPushButton("📁 Open Folder")
-        self.open_folder_button.clicked.connect(self.open_save_folder)
-
-        # Status
-        self.status_label = QtWidgets.QLabel(f"Ready | Saving to: {SAVE_DIR}")
-        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 11px; padding: 5px;")
-
-        self.recording_indicator = QtWidgets.QLabel("")
-        self.recording_indicator.setAlignment(QtCore.Qt.AlignCenter)
-        self.recording_indicator.setStyleSheet("font-size: 14px; color: red; font-weight: bold;")
-
-        # Layout
-        zoom_layout = QtWidgets.QHBoxLayout()
-        zoom_layout.addWidget(zoom_label)
-        zoom_layout.addWidget(self.zoom_slider)
-        zoom_layout.addWidget(self.zoom_value_label)
-        zoom_layout.addWidget(reset_button)
-
-        button_layout = QtWidgets.QHBoxLayout()
-        button_layout.addWidget(self.photo_button)
-        button_layout.addWidget(self.record_button)
-        button_layout.addWidget(self.open_folder_button)
-
-        main_layout = QtWidgets.QVBoxLayout()
-        main_layout.addWidget(self.detector_widget)
-        main_layout.addWidget(self.recording_indicator)
-        main_layout.addLayout(zoom_layout)
-        main_layout.addLayout(button_layout)
-        main_layout.addWidget(self.status_label)
-        self.setLayout(main_layout)
-
+        # Camera variables
+        self.cap = None
+        self.camera_index = 0
+        self.is_running = False
+        self.is_frozen = False
+        self.frozen_frame = None
+        
+        # Image adjustments
+        self.brightness = 0
+        self.contrast = 1.0
+        self.zoom_level = 1.0
+        self.flip_horizontal = False
+        self.flip_vertical = False
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Try to initialize camera
+        self.initialize_camera()
+        
+        # Start video loop
+        if self.is_running:
+            self.update_frame()
+    
+    def setup_ui(self):
+        # Main container
+        main_frame = Frame(self.root)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Video display area
+        self.video_label = Label(main_frame, bg="black")
+        self.video_label.pack(side="left", fill="both", expand=True)
+        
+        # Control panel
+        control_frame = Frame(main_frame, width=300)
+        control_frame.pack(side="right", fill="y", padx=(10, 0))
+        
+        # Title
+        Label(control_frame, text="Camera Controls", font=("Arial", 16, "bold")).pack(pady=10)
+        
+        # Freeze/Unfreeze button
+        self.freeze_btn = Button(control_frame, text="Freeze Frame", 
+                                command=self.toggle_freeze, 
+                                bg="#4CAF50", fg="white", 
+                                font=("Arial", 12), height=2)
+        self.freeze_btn.pack(fill="x", pady=5)
+        
+        # Brightness control
+        Label(control_frame, text="Brightness", font=("Arial", 10)).pack(pady=(15, 5))
+        self.brightness_scale = Scale(control_frame, from_=-100, to=100, 
+                                     orient=HORIZONTAL, command=self.update_brightness)
+        self.brightness_scale.set(0)
+        self.brightness_scale.pack(fill="x")
+        
+        # Contrast control
+        Label(control_frame, text="Contrast", font=("Arial", 10)).pack(pady=(15, 5))
+        self.contrast_scale = Scale(control_frame, from_=0.5, to=3.0, 
+                                   resolution=0.1, orient=HORIZONTAL, 
+                                   command=self.update_contrast)
+        self.contrast_scale.set(1.0)
+        self.contrast_scale.pack(fill="x")
+        
+        # Zoom control
+        Label(control_frame, text="Digital Zoom", font=("Arial", 10)).pack(pady=(15, 5))
+        self.zoom_scale = Scale(control_frame, from_=1.0, to=3.0, 
+                               resolution=0.1, orient=HORIZONTAL, 
+                               command=self.update_zoom)
+        self.zoom_scale.set(1.0)
+        self.zoom_scale.pack(fill="x")
+        
+        # Flip controls
+        Button(control_frame, text="Flip Horizontal", 
+               command=self.toggle_flip_h, height=2).pack(fill="x", pady=5)
+        Button(control_frame, text="Flip Vertical", 
+               command=self.toggle_flip_v, height=2).pack(fill="x", pady=5)
+        
+        # Reset button
+        Button(control_frame, text="Reset All Settings", 
+               command=self.reset_settings, 
+               bg="#FF9800", fg="white", 
+               font=("Arial", 10), height=2).pack(fill="x", pady=(15, 5))
+        
+        # Fullscreen button
+        Button(control_frame, text="Open Fullscreen Display", 
+               command=self.open_fullscreen, 
+               bg="#2196F3", fg="white", 
+               font=("Arial", 12), height=2).pack(fill="x", pady=(15, 5))
+        
+        # Exit button
+        Button(control_frame, text="Exit", 
+               command=self.on_closing, 
+               bg="#f44336", fg="white", 
+               font=("Arial", 12), height=2).pack(fill="x", pady=5)
+        
+        # Status label
+        self.status_label = Label(control_frame, text="Status: Initializing...", 
+                                 font=("Arial", 9), fg="gray")
+        self.status_label.pack(side="bottom", pady=10)
+        
+        # Handle window closing
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def initialize_camera(self):
+        """Initialize USB camera"""
+        for i in range(5):  # Try first 5 camera indices
+            self.cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # DSHOW for Windows
+            if self.cap.isOpened():
+                self.camera_index = i
+                self.is_running = True
+                
+                # Set camera properties for better quality
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                self.cap.set(cv2.CAP_PROP_FPS, 30)
+                
+                self.status_label.config(text=f"Status: Camera {i} connected", fg="green")
+                return True
+        
+        self.status_label.config(text="Status: No camera found!", fg="red")
+        messagebox.showerror("Camera Error", 
+                           "No USB camera detected!\nPlease connect camera and restart.")
+        return False
+    
+    def update_brightness(self, value):
+        self.brightness = int(float(value))
+    
+    def update_contrast(self, value):
+        self.contrast = float(value)
+    
     def update_zoom(self, value):
-        zoom_factor = value / 10.0
-        self.video.set_zoom(zoom_factor)
-        self.zoom_value_label.setText(f"{zoom_factor:.1f}x")
-
-    def reset_zoom(self):
-        self.zoom_slider.setValue(10)
-
-    def take_photo(self):
-        filename = self.video.take_photo()
-        if filename:
-            self.status_label.setText(f"✅ Photo saved: {Path(filename).name}")
-            QtCore.QTimer.singleShot(3000, lambda: self.status_label.setText(f"Ready | Saving to: {SAVE_DIR}"))
+        self.zoom_level = float(value)
+    
+    def toggle_flip_h(self):
+        self.flip_horizontal = not self.flip_horizontal
+    
+    def toggle_flip_v(self):
+        self.flip_vertical = not self.flip_vertical
+    
+    def toggle_freeze(self):
+        if not self.is_frozen:
+            self.is_frozen = True
+            self.freeze_btn.config(text="Unfreeze", bg="#FF5722")
         else:
-            self.status_label.setText("❌ Failed to capture photo")
-
-    def toggle_recording(self):
-        if not self.video.is_recording:
-            filename = self.video.start_recording()
-            if filename:
-                self.status_label.setText(f"🎥 Recording: {Path(filename).name}")
+            self.is_frozen = False
+            self.frozen_frame = None
+            self.freeze_btn.config(text="Freeze Frame", bg="#4CAF50")
+    
+    def reset_settings(self):
+        self.brightness_scale.set(0)
+        self.contrast_scale.set(1.0)
+        self.zoom_scale.set(1.0)
+        self.flip_horizontal = False
+        self.flip_vertical = False
+        self.is_frozen = False
+        self.frozen_frame = None
+        self.freeze_btn.config(text="Freeze Frame", bg="#4CAF50")
+    
+    def process_frame(self, frame):
+        """Apply all adjustments to frame"""
+        # Apply brightness and contrast
+        frame = cv2.convertScaleAbs(frame, alpha=self.contrast, beta=self.brightness)
+        
+        # Apply zoom
+        if self.zoom_level > 1.0:
+            h, w = frame.shape[:2]
+            crop_h, crop_w = int(h / self.zoom_level), int(w / self.zoom_level)
+            start_h, start_w = (h - crop_h) // 2, (w - crop_w) // 2
+            frame = frame[start_h:start_h + crop_h, start_w:start_w + crop_w]
+            frame = cv2.resize(frame, (w, h))
+        
+        # Apply flips
+        if self.flip_horizontal:
+            frame = cv2.flip(frame, 1)
+        if self.flip_vertical:
+            frame = cv2.flip(frame, 0)
+        
+        return frame
+    
+    def update_frame(self):
+        """Main video loop"""
+        if not self.is_running:
+            return
+        
+        if self.is_frozen and self.frozen_frame is not None:
+            frame = self.frozen_frame
         else:
-            self.video.stop_recording()
-            self.status_label.setText("✅ Recording saved")
-            QtCore.QTimer.singleShot(3000, lambda: self.status_label.setText(f"Ready | Saving to: {SAVE_DIR}"))
+            ret, frame = self.cap.read()
+            if not ret:
+                self.status_label.config(text="Status: Camera disconnected!", fg="red")
+                self.root.after(1000, self.initialize_camera)  # Try to reconnect
+                return
+            
+            frame = self.process_frame(frame)
+            
+            if self.is_frozen and self.frozen_frame is None:
+                self.frozen_frame = frame.copy()
+        
+        # Convert to PhotoImage for display
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame_rgb)
+        
+        # Resize to fit display
+        display_width = 900
+        display_height = int(display_width * img.height / img.width)
+        img = img.resize((display_width, display_height), Image.Resampling.LANCZOS)
+        
+        photo = ImageTk.PhotoImage(image=img)
+        self.video_label.config(image=photo)
+        self.video_label.image = photo
+        
+        # Schedule next frame
+        self.root.after(33, self.update_frame)  # ~30 FPS
+    
+    def open_fullscreen(self):
+        """Open fullscreen window on secondary display"""
+        fullscreen_window = FullscreenDisplay(self)
+    
+    def on_closing(self):
+        """Cleanup and exit"""
+        self.is_running = False
+        if self.cap is not None:
+            self.cap.release()
+        self.root.quit()
+        self.root.destroy()
 
-    def open_save_folder(self):
-        if sys.platform == 'win32':
-            os.startfile(SAVE_DIR)
-        elif sys.platform == 'darwin':
-            os.system(f'open "{SAVE_DIR}"')
+
+class FullscreenDisplay:
+    """Fullscreen window for patient hall TV"""
+    def __init__(self, parent_app):
+        self.parent = parent_app
+        self.window = Tk()
+        self.window.title("Dental Camera - Patient Display")
+        self.window.attributes('-fullscreen', True)
+        self.window.configure(bg='black')
+        
+        # Video display
+        self.video_label = Label(self.window, bg="black")
+        self.video_label.pack(fill="both", expand=True)
+        
+        # Exit fullscreen with Escape
+        self.window.bind('<Escape>', lambda e: self.close_window())
+        
+        # Start update loop
+        self.update_frame()
+        self.window.mainloop()
+    
+    def update_frame(self):
+        """Update fullscreen display"""
+        if not self.parent.is_running:
+            return
+        
+        if self.parent.is_frozen and self.parent.frozen_frame is not None:
+            frame = self.parent.frozen_frame
         else:
-            os.system(f'xdg-open "{SAVE_DIR}"')
+            ret, frame = self.parent.cap.read()
+            if not ret:
+                self.window.after(100, self.update_frame)
+                return
+            
+            frame = self.parent.process_frame(frame)
+        
+        # Convert and display
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame_rgb)
+        
+        # Resize to fit screen
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        img = img.resize((screen_width, screen_height), Image.Resampling.LANCZOS)
+        
+        photo = ImageTk.PhotoImage(image=img)
+        self.video_label.config(image=photo)
+        self.video_label.image = photo
+        
+        self.window.after(33, self.update_frame)
+    
+    def close_window(self):
+        self.window.destroy()
 
-    def update_recording_ui(self, is_recording):
-        if is_recording:
-            self.record_button.setText("⏹️ Stop Recording")
-            self.record_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-size: 14px; padding: 10px; }")
-            self.recording_indicator.setText("● REC")
-            self.photo_button.setEnabled(False)
-        else:
-            self.record_button.setText("🎥 Start Recording")
-            self.record_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-size: 14px; padding: 10px; }")
-            self.recording_indicator.setText("")
-            self.photo_button.setEnabled(True)
 
-def find_camera():
-    for i in range(5):
-        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            cap.release()
-            if ret:
-                print(f"Camera found at index {i}")
-                return i
-    return 0
+def main():
+    root = Tk()
+    app = DentalCameraApp(root)
+    root.mainloop()
+
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    camera_index = find_camera()
-    main_window = QtWidgets.QMainWindow()
-    main_widget = MainWidget(camera_port=camera_index)
-    main_window.setCentralWidget(main_widget)
-    main_window.setWindowTitle("🦷 Dental Detection - USB Camera")
-    main_window.resize(900, 750)
-    main_window.show()
-    sys.exit(app.exec())
+    main()
